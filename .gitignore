@@ -1,0 +1,14 @@
+**/.env
+**/.env.*
+!.env.example
+**/*.pyc
+**/.DS_Store
+**/__pycache__/**
+/runlogs/**
+/docs/**
+*.backup-*
+.ariadne/
+.claude/
+RAVI_README.md
+bot/pcc-deploy.toml
+bot/ariadne/PROJECT_BACKGROUND.md

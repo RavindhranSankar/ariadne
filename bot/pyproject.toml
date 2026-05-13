@@ -1,0 +1,23 @@
+[project]
+name = "ariadne"
+version = "0.1.0"
+description = "Voice AI bot built with Pipecat"
+requires-python = ">=3.10"
+dependencies = [
+    "pipecat-ai[cartesia,daily,deepgram,openai,runner,silero,webrtc]",
+    "pipecatcloud",
+    "aiohttp>=3.9",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.404,<2",
+    "ruff>=0.12.11,<1",
+]
+
+[tool.ruff]
+line-length = 100
+[tool.ruff.lint]
+select = ["I"]

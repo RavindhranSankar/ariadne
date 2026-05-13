@@ -1,0 +1,29 @@
+services:
+  ariadne:
+    image: ravisankarmbp/ariadne:latest
+    build:
+      context: ./bot
+    env_file:
+      # API keys and app config — paths in this file are overridden below
+      - ./bot/.env
+    environment:
+      # Container-side paths always take precedence over bot/.env values
+      ARIADNE_REPO_PATH: /workspace/repo
+      ARIADNE_BRIEFS_DIR: /workspace/briefs
+      LOGS_DIR: /logs
+      ARIADNE_DEBUG_SERVER_HOST: "0.0.0.0"
+      ARIADNE_PROJECT_BACKGROUND_PATH: /app/ariadne/PROJECT_BACKGROUND.md
+      # bubblewrap can't create user namespaces in Docker; safe to bypass
+      # because the repo volume is already mounted read-only
+      ARIADNE_CODEX_BYPASS_SANDBOX: "true"
+    volumes:
+      # ARIADNE_REPO_HOST_PATH, ARIADNE_BRIEFS_HOST_PATH, and LOGS_HOST_PATH
+      # come from the root .env file (copy .env.example → .env and fill in paths)
+      - ${ARIADNE_REPO_HOST_PATH:?Set ARIADNE_REPO_HOST_PATH in root .env}:/workspace/repo:ro
+      - ${ARIADNE_BRIEFS_HOST_PATH:?Set ARIADNE_BRIEFS_HOST_PATH in root .env}:/workspace/briefs
+      - ${LOGS_HOST_PATH:?Set LOGS_HOST_PATH in root .env}:/logs
+      - ${HOME}/.codex:/root/.codex  # codex uses ChatGPT OAuth; token lives here
+    ports:
+      - "7860:7860"   # pipecat runner HTTP endpoint (point ngrok here)
+      - "8765:8765"   # debug server
+    command: uv run bot.py --host 0.0.0.0 -t daily --dialin
