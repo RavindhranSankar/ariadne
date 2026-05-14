@@ -14,7 +14,7 @@ set -euo pipefail
 WEBHOOK_URL="${1:?Usage: ./tools/register-dialin.sh <webhook_url>}"
 
 LOCAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BOT_ENV="$LOCAL_ROOT/bot/.env"
+BOT_ENV="${BOT_ENV_FILE:-$LOCAL_ROOT/bot/.env}"
 
 if [ ! -f "$BOT_ENV" ]; then
   echo "ERROR: bot/.env not found at $BOT_ENV" >&2

@@ -4,6 +4,48 @@ A local-first, voice-first engineering thought partner for coding-agent workflow
 
 Call your workstation, talk through a codebase problem, let Ariadne inspect your repo read-only, and leave with a structured implementation brief for Codex, Claude Code, or another coding agent.
 
+---
+
+## Call Ariadne
+
+The fastest way to understand Ariadne is to call it.
+
+**+1 (209) 821-5967**
+
+This instance is pointed at the Ariadne repo itself. It can read its own source to answer you.
+
+Some things worth trying:
+
+```
+How do you actually work?
+```
+
+```
+Why can't you just edit the code yourself?
+```
+
+```
+What happens between when I ask you to investigate something and when you report back?
+```
+
+```
+Investigate yourself — what's the most interesting design decision in your own codebase?
+```
+
+```
+Walk me through how an implementation brief gets written.
+```
+
+```
+Write me a brief for adding a new capability to yourself.
+```
+
+That last one runs the full workflow: live repo investigation, then a structured handoff doc — written about Ariadne, by Ariadne.
+
+That's what you'd set up on your own repo.
+
+---
+
 ## Current Status
 
 Early private beta. Ariadne is intended for one engineer running the tool locally against a personal, open-source, or explicitly authorized repo.
