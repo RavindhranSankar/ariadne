@@ -2,7 +2,10 @@
 # tools/build-deploy.sh — Cross-build Ariadne for linux/amd64 and deploy to a Droplet.
 #
 # Usage:
-#   DROPLET_IP=x.x.x.x ./tools/build-deploy.sh
+#   DROPLET_IP=x.x.x.x ./tools/build-deploy.sh [--no-refresh]
+#
+# Flags:
+#   --no-refresh   Skip project background refresh (faster deploys when code hasn't changed)
 #
 # Optional overrides:
 #   DROPLET_USER=root          SSH user (default: root)
@@ -11,6 +14,7 @@
 #   IMAGE=ravisankarmbp/ariadne:latest  Docker Hub image tag
 #
 # What this script does:
+#   0. Regenerates bot/ariadne/PROJECT_BACKGROUND.md (baked into the Docker image)
 #   1. Cross-builds the image for linux/amd64 on your Mac and pushes to Docker Hub
 #   2. SCPs docker-compose.yml, bot/.env, and ~/.codex/auth.json to the server
 #   3. SSHs in and:
@@ -22,6 +26,15 @@
 #        - Starts the container
 
 set -euo pipefail
+
+# ── Argument parsing ───────────────────────────────────────────────────────────
+
+SKIP_BG_REFRESH=false
+for arg in "$@"; do
+  case "$arg" in
+    --no-refresh) SKIP_BG_REFRESH=true ;;
+  esac
+done
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -35,6 +48,27 @@ REMOTE_LOGS_DIR="$REMOTE_HOME/ariadne-logs"
 REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-$REMOTE_PROJECT_DIR}"
 
 LOCAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ── Preflight checks ───────────────────────────────────────────────────────────
+
+DEPLOY_ENV="$LOCAL_ROOT/bot/.env.deploy"
+if [[ ! -f "$DEPLOY_ENV" ]]; then
+  echo "ERROR: bot/.env.deploy not found."
+  echo "       Create it by copying bot/.env and setting the deployment dial-in number."
+  echo "       cp bot/.env bot/.env.deploy"
+  exit 1
+fi
+
+# ── 0. Refresh project background ─────────────────────────────────────────────
+
+if $SKIP_BG_REFRESH; then
+  echo "==> Skipping project background refresh (--no-refresh)"
+else
+  echo "==> Refreshing project background for bot/..."
+  ARIADNE_REPO_PATH="$LOCAL_ROOT/bot" \
+  ARIADNE_PROJECT_BACKGROUND_PATH="$LOCAL_ROOT/bot/ariadne/PROJECT_BACKGROUND.md" \
+    "$LOCAL_ROOT/tools/refresh_project_background.sh"
+fi
 
 # ── 1. Cross-build and push ────────────────────────────────────────────────────
 
@@ -65,7 +99,7 @@ echo "==> Copying config files to $DROPLET_USER@$DROPLET_IP..."
 ssh "$DROPLET_USER@$DROPLET_IP" "mkdir -p $REMOTE_PROJECT_DIR/bot $REMOTE_HOME/.codex"
 
 scp -q "$LOCAL_ROOT/docker-compose.yml"  "$DROPLET_USER@$DROPLET_IP:$REMOTE_PROJECT_DIR/docker-compose.yml"
-scp -q "$LOCAL_ROOT/bot/.env"            "$DROPLET_USER@$DROPLET_IP:$REMOTE_PROJECT_DIR/bot/.env"
+scp -q "$LOCAL_ROOT/bot/.env.deploy"     "$DROPLET_USER@$DROPLET_IP:$REMOTE_PROJECT_DIR/bot/.env"
 scp -q ~/.codex/auth.json                "$DROPLET_USER@$DROPLET_IP:$REMOTE_HOME/.codex/auth.json"
 
 echo "    Done"
@@ -135,7 +169,7 @@ REMOTE
 # ── Register Daily dial-in webhook ────────────────────────────────────────────
 
 WEBHOOK_URL="http://$DROPLET_IP:7860/daily-dialin-webhook"
-"$(dirname "$0")/register-dialin.sh" "$WEBHOOK_URL"
+BOT_ENV_FILE="$DEPLOY_ENV" "$(dirname "$0")/register-dialin.sh" "$WEBHOOK_URL"
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 
