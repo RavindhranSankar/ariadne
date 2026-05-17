@@ -170,13 +170,13 @@ async def run_bot(transport: BaseTransport):
     # ------------------------------------------------------------------
 
     pipeline = Pipeline([
-        transport.input(),
+        transport.input(), # source
         stt,
-        user_aggregator,
+        user_aggregator, # generates turn boundaries
         llm,
         tts,
-        transport.output(),
-        assistant_aggregator,
+        transport.output(), # sink
+        assistant_aggregator, # updates the LLMcontext
     ])
 
     task = PipelineTask(

@@ -16,6 +16,8 @@
 # What this script does:
 #   0. Regenerates bot/ariadne/PROJECT_BACKGROUND.md (baked into the Docker image)
 #   1. Cross-builds the image for linux/amd64 on your Mac and pushes to Docker Hub
+#      Pushes two tags: :latest and a timestamped tag (e.g. v20260517-143022)
+#      The timestamped tag is logged to tools/.deploy-history for rollbacks.
 #   2. SCPs docker-compose.yml, bot/.env, and ~/.codex/auth.json to the server
 #   3. SSHs in and:
 #        - Installs Docker if not present
@@ -24,6 +26,7 @@
 #        - Patches bot/.env with server-side paths
 #        - Pulls the pre-built image from Docker Hub
 #        - Starts the container
+#        - Writes the deployed tag to .ariadne-version for reference
 
 set -euo pipefail
 
@@ -41,6 +44,8 @@ done
 DROPLET_IP="${DROPLET_IP:?Usage: DROPLET_IP=x.x.x.x ./tools/deploy.sh}"
 DROPLET_USER="${DROPLET_USER:-root}"
 IMAGE="${IMAGE:-ravisankarmbp/ariadne:latest}"
+IMAGE_REPO="${IMAGE%:*}"  # ravisankarmbp/ariadne
+BUILD_TAG="v$(date +%Y%m%d-%H%M%S)"
 
 REMOTE_HOME="/root"
 REMOTE_PROJECT_DIR="$REMOTE_HOME/ariadne"
@@ -86,11 +91,13 @@ docker buildx build \
   --builder cross-builder \
   --platform linux/amd64 \
   -t "$IMAGE" \
+  -t "$IMAGE_REPO:$BUILD_TAG" \
   "$LOCAL_ROOT/bot" \
   --push
 
 echo ""
 echo "    Image pushed: $IMAGE"
+echo "    Versioned tag: $IMAGE_REPO:$BUILD_TAG"
 
 # ── 2. Copy config files to server ────────────────────────────────────────────
 
@@ -161,6 +168,9 @@ cd "$REMOTE_PROJECT_DIR"
 docker compose pull
 docker compose up -d
 
+echo "$BUILD_TAG" > "$REMOTE_PROJECT_DIR/.ariadne-version"
+echo "  Deployed tag: $BUILD_TAG"
+
 echo ""
 echo "  Container status:"
 docker compose ps
@@ -173,9 +183,14 @@ BOT_ENV_FILE="$DEPLOY_ENV" "$(dirname "$0")/register-dialin.sh" "$WEBHOOK_URL"
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 
+echo "$BUILD_TAG  $(date -u +%Y-%m-%dT%H:%M:%SZ)  $DROPLET_IP" >> "$LOCAL_ROOT/tools/.deploy-history"
+
 echo ""
 echo "==> Deployed successfully!"
 echo ""
+echo "    Tag:              $BUILD_TAG"
 echo "    Dial-in number:   ${DAILY_DIALIN_PHONE_NUMBER:-<not set>}"
 echo "    Pipecat webhook:  $WEBHOOK_URL"
 echo "    Debug server:     http://$DROPLET_IP:8765/debug/sessions"
+echo ""
+echo "    To roll back:     DROPLET_IP=$DROPLET_IP ./tools/rollback.sh $BUILD_TAG"

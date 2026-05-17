@@ -12,3 +12,5 @@
 RAVI_README.md
 bot/pcc-deploy.toml
 bot/ariadne/PROJECT_BACKGROUND.md
+tools/.deploy-history
+/ravi-notes/**
