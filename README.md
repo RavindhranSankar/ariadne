@@ -1,5 +1,7 @@
 # Ariadne
 
+> **Early beta.** Ariadne is under active development. Expect rough edges, breaking changes between versions, and incomplete documentation. It is intended for personal use against repos you own or have explicit authorization to inspect.
+
 A local-first, voice-first engineering thought partner for coding-agent workflows.
 
 Call your workstation, talk through a codebase problem, let Ariadne inspect your repo read-only, and leave with a structured implementation brief for Codex, Claude Code, or another coding agent.
@@ -45,10 +47,6 @@ That last one runs the full workflow: live repo investigation, then a structured
 That's what you'd set up on your own repo.
 
 ---
-
-## Current Status
-
-Early private beta. Ariadne is intended for one engineer running the tool locally against a personal, open-source, or explicitly authorized repo.
 
 ## Requirements
 
@@ -220,34 +218,47 @@ Set `ARIADNE_DEBUG_SERVER_ENABLED=true` in `bot/.env`, then open `http://localho
 
 ```text
 ariadne/
-├── setup.sh                  # One-time setup
-├── start_ariadne.sh           # Start a session (ngrok + Daily + bot)
+├── setup.sh                       # One-time setup
+├── start_ariadne.sh                # Start a session (ngrok + Daily + bot)
 ├── bot/
-│   ├── bot.py
+│   ├── bot.py                     # Entry point
 │   ├── ariadne/
-│   │   ├── pipeline.py
-│   │   ├── agent.py
-│   │   ├── tools.py
-│   │   ├── task_queue.py
-│   │   ├── orchestrator.py
-│   │   ├── repo_investigator.py
-│   │   ├── implementation_doc.py
-│   │   ├── paths.py
-│   │   ├── session.py
-│   │   ├── session_logger.py
-│   │   ├── transport.py
-│   │   ├── stt.py
-│   │   ├── tts.py
-│   │   ├── debug_server.py
-│   │   └── idle_timeout.py
+│   │   ├── runner.py              # Composition root; Pipecat pipeline wiring
+│   │   ├── config.py              # AriadneConfig; centralised env var parsing
+│   │   ├── ariadne_session.py     # AriadneSession; turn and investigation counters
+│   │   ├── ariadne_task_queue.py  # AriadneTaskQueue, AriadneTask, TaskKind, TaskStatus
+│   │   ├── task_result.py         # TaskResult, TaskArtifact typed domain objects
+│   │   ├── task_handler.py        # TaskHandler protocol
+│   │   ├── task_executor.py       # TaskExecutor; maps TaskKind to handlers
+│   │   ├── orchestrator.py        # Orchestrator; task lifecycle only
+│   │   ├── session_logger.py      # SessionLogger; JSONL + transcript + SSE
+│   │   ├── idle_timeout.py        # IdleTimeout watchdog
+│   │   ├── transport.py           # Daily / SmallWebRTC transport factory
+│   │   ├── stt.py                 # Deepgram STT factory
+│   │   ├── tts.py                 # Cartesia TTS factory
+│   │   ├── debug_server.py        # Optional aiohttp debug server (port 8765)
+│   │   ├── llm_agent/
+│   │   │   ├── agent.py           # LLMAgent; service + context construction
+│   │   │   ├── tools.py           # Tool schemas and callback registration
+│   │   │   ├── AGENT_BACKGROUND.md    # Stable Ariadne product context
+│   │   │   └── CORE_INSTRUCTIONS.md   # Voice constraints and tool-use policy
+│   │   ├── coding_agent/
+│   │   │   ├── investigator.py    # Investigator; spawns Codex subprocess
+│   │   │   ├── doc_writer.py      # DocWriter; generates implementation briefs
+│   │   │   ├── handlers.py        # InvestigationTaskHandler, WriteDocTaskHandler
+│   │   │   ├── ARIADNE-AGENT-RULES.md     # Rules injected into every Codex prompt
+│   │   │   ├── INVESTIGATION_PROMPT.md    # Codex investigation prompt template
+│   │   │   └── BRIEF_PROMPT.md            # Implementation brief prompt template
+│   │   └── utils/
+│   │       └── paths.py           # ARIADNE_HOME, logs dir, briefs dir helpers
 │   ├── pyproject.toml
 │   ├── .env.example
 │   └── Dockerfile
 ├── tools/
 │   ├── register-dialin.sh
 │   ├── refresh_project_background.sh
-│   └── build-deploy.sh
-├── docs/
+│   ├── build-deploy.sh
+│   └── rollback.sh
 ├── docker-compose.yml
 ├── .env.example
 ├── PRIVACY.md
