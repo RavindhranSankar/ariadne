@@ -6,7 +6,7 @@ from typing import Any
 
 from loguru import logger
 
-from ariadne.paths import get_logs_dir
+from ariadne.utils.paths import get_logs_dir
 
 # Subfolder names for per-module event logs.
 _MODULE_FOLDERS = {
@@ -108,6 +108,9 @@ class SessionLogger:
 
     def append_transcript_codex(self, turn_id: str, investigation_id: str, text: str):
         self._append(f"\nRepo Investigator ({investigation_id}):\n{text}\n")
+
+    def append_transcript_doc(self, path: str):
+        self._append(f"\nImplementation brief written:\n{path}\n")
 
     def write_session_json(self, session):
         try:

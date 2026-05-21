@@ -1,13 +1,12 @@
 import asyncio
-import os
 from typing import Callable, Coroutine
 
 from loguru import logger
 
 
-class IdleTimeoutWatcher:
-    def __init__(self, *, on_timeout: Callable[[], Coroutine]):
-        self._timeout_seconds = float(os.getenv("ARIADNE_IDLE_TIMEOUT_SECONDS", "300"))
+class IdleTimeout:
+    def __init__(self, *, on_timeout: Callable[[], Coroutine], timeout_seconds: float):
+        self._timeout_seconds = timeout_seconds
         self._on_timeout = on_timeout
         self._task: asyncio.Task | None = None
 

@@ -22,8 +22,8 @@ from pathlib import Path
 from aiohttp import web
 from loguru import logger
 
-from ariadne.paths import get_logs_dir
-from ariadne.session import AriadneSession
+from ariadne.ariadne_session import AriadneSession
+from ariadne.utils.paths import get_logs_dir
 
 # Registry of sessions added via register_session().
 _sessions: dict[str, AriadneSession] = {}

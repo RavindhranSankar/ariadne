@@ -1,5 +1,4 @@
 import asyncio
-import os
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -7,59 +6,67 @@ from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame, TTSSpeakF
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
 from pipecat.transports.base_transport import BaseTransport
 
-from ariadne.agent import create_llm_service
-from ariadne.debug_server import register_session, start_debug_server, stop_debug_server, unregister_session
-from ariadne.idle_timeout import IdleTimeoutWatcher
-from ariadne.orchestrator import RepoAgentOrchestrator
-from ariadne.repo_investigator import create_repo_investigator
-from ariadne.session import AriadneSession
+from ariadne.ariadne_session import AriadneSession
+from ariadne.ariadne_task_queue import AriadneTaskQueue
+from ariadne.coding_agent.doc_writer import DocWriter
+from ariadne.coding_agent.handlers import InvestigationTaskHandler, WriteDocTaskHandler
+from ariadne.coding_agent.investigator import Investigator
+from ariadne.config import AriadneConfig
+from ariadne.debug_server import (
+    register_session,
+    start_debug_server,
+    stop_debug_server,
+    unregister_session,
+)
+from ariadne.idle_timeout import IdleTimeout
+from ariadne.llm_agent.agent import LLMAgent
+from ariadne.llm_agent.tools import register_tools
+from ariadne.orchestrator import Orchestrator
 from ariadne.stt import create_stt_service
-from ariadne.task_queue import TaskQueue
-from ariadne.tools import build_tools_schema, register_tools
+from ariadne.task_executor import TaskExecutor
 from ariadne.tts import create_tts_service
 
 GOODBYE_MESSAGE = "Thank you for using Ariadne. Wishing you well for the rest of the day."
 
 
-def _build_greeting_label() -> str:
-    user_name = os.getenv("ARIADNE_USER_NAME", "").strip()
-    project_name = os.getenv("ARIADNE_PROJECT_NAME", "").strip()
-    label = f"Ariadne, {user_name}'s coding assistant" if user_name else "Ariadne"
-    if project_name:
-        label += f", working on {project_name}"
+def _build_greeting_label(config: AriadneConfig) -> str:
+    label = f"Ariadne, {config.user_name}'s coding assistant" if config.user_name else "Ariadne"
+    if config.project_name:
+        label += f", working on {config.project_name}"
     return label
 
 
 async def run_bot(transport: BaseTransport):
     logger.info("Starting bot")
 
+    config = AriadneConfig.from_env()
     session = AriadneSession()
     task_ref: dict = {"task": None}
-    orchestrator_task_ref: dict = {"task": None}
 
+    llm_agent = LLMAgent(config)
     stt = create_stt_service()
     tts = create_tts_service()
-    llm = create_llm_service()
-
-    context = LLMContext()
-    context.set_tools(build_tools_schema())
 
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
-        context,
+        llm_agent.context,
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(),
         ),
     )
 
-    task_queue = TaskQueue()
-    repo_investigator = create_repo_investigator(session)
+    task_queue = AriadneTaskQueue(max_active=config.task_queue_max)
+    investigator = Investigator(repo_path=config.repo_path, session=session, codex_timeout_seconds=config.codex_timeout_seconds)
+    doc_writer = DocWriter(session=session, repo_path=config.repo_path)
+    task_executor = TaskExecutor([
+        InvestigationTaskHandler(investigator=investigator, session=session),
+        WriteDocTaskHandler(doc_writer=doc_writer),
+    ])
 
     # ------------------------------------------------------------------
     # Task event handler: inject completion/failure notice into LLM context.
@@ -96,14 +103,15 @@ async def run_bot(transport: BaseTransport):
             )
         ])
 
-    orchestrator = RepoAgentOrchestrator(
+    orchestrator = Orchestrator(
         task_queue=task_queue,
-        repo_investigator=repo_investigator,
+        task_executor=task_executor,
         session=session,
         on_task_event=on_task_event,
+        task_timeout_seconds=config.task_timeout_seconds,
     )
 
-    register_tools(llm, task_queue, orchestrator, session)
+    register_tools(llm_agent.service, task_queue, orchestrator, session)
 
     # ------------------------------------------------------------------
     # STT: fires once per complete VAD-bounded user turn.
@@ -163,20 +171,23 @@ async def run_bot(transport: BaseTransport):
         session.close("idle_timeout")
         await task.cancel()
 
-    idle_timeout = IdleTimeoutWatcher(on_timeout=on_idle_timeout)
+    idle_timeout = IdleTimeout(
+        on_timeout=on_idle_timeout,
+        timeout_seconds=config.idle_timeout_seconds,
+    )
 
     # ------------------------------------------------------------------
     # Pipeline
     # ------------------------------------------------------------------
 
     pipeline = Pipeline([
-        transport.input(), # source
+        transport.input(),
         stt,
-        user_aggregator, # generates turn boundaries
-        llm,
+        user_aggregator,
+        llm_agent.service,
         tts,
-        transport.output(), # sink
-        assistant_aggregator, # updates the LLMcontext
+        transport.output(),
+        assistant_aggregator,
     ])
 
     task = PipelineTask(
@@ -191,7 +202,7 @@ async def run_bot(transport: BaseTransport):
 
     @task.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
-        context.add_message({"role": "user", "content": "Please introduce yourself."})
+        llm_agent.context.add_message({"role": "user", "content": "Please introduce yourself."})
         await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_connected")
@@ -202,12 +213,12 @@ async def run_bot(transport: BaseTransport):
         session.logger.write_session_json(session)
         idle_timeout.start()
         await asyncio.sleep(1.0)
-        context.add_message(
+        llm_agent.context.add_message(
             {
                 "role": "user",
                 "content": (
                     "The caller has just joined the phone call. "
-                    f"Greet them briefly as {_build_greeting_label()} and ask what they "
+                    f"Greet them briefly as {_build_greeting_label(config)} and ask what they "
                     "want to think through. Keep it to one short sentence."
                 ),
             }
@@ -238,7 +249,6 @@ async def run_bot(transport: BaseTransport):
         logger.warning(f"Debug server failed to start: {exc}")
 
     orchestrator_task = asyncio.create_task(orchestrator.run())
-    orchestrator_task_ref["task"] = orchestrator_task
 
     try:
         runner = PipelineRunner(handle_sigint=False)

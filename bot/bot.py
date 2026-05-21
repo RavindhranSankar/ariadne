@@ -7,8 +7,8 @@
 from dotenv import load_dotenv
 from pipecat.runner.types import RunnerArguments
 
+from ariadne.runner import run_bot
 from ariadne.transport import create_transport
-from ariadne.pipeline import run_bot
 
 load_dotenv(override=True)
 

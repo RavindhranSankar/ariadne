@@ -1,18 +1,17 @@
 import asyncio
-import os
 from typing import Callable, Coroutine
 
 from loguru import logger
 
-from ariadne.implementation_doc import ImplementationDocWriter
-from ariadne.repo_investigator import RepoInvestigator
-from ariadne.session import AriadneSession
-from ariadne.task_queue import TaskQueue, TaskRecord
+from ariadne.ariadne_session import AriadneSession
+from ariadne.ariadne_task_queue import AriadneTask, AriadneTaskQueue
+from ariadne.task_executor import TaskExecutor
+from ariadne.task_result import TaskResult
 
 
-class RepoAgentOrchestrator:
+class Orchestrator:
     """
-    Consumes tasks from TaskQueue and manages worker lifecycle.
+    Consumes tasks from AriadneTaskQueue and manages worker lifecycle.
 
     Runs as a long-lived asyncio task for the duration of the session.
     Calls on_task_event when a task completes or fails so the pipeline
@@ -22,16 +21,17 @@ class RepoAgentOrchestrator:
     def __init__(
         self,
         *,
-        task_queue: TaskQueue,
-        repo_investigator: RepoInvestigator,
+        task_queue: AriadneTaskQueue,
+        task_executor: TaskExecutor,
         session: AriadneSession,
         on_task_event: Callable[[dict], Coroutine],
+        task_timeout_seconds: float = 300.0,
     ):
         self._queue = task_queue
-        self._repo_investigator = repo_investigator
+        self._task_executor = task_executor
         self._session = session
         self._on_task_event = on_task_event
-        self._timeout = float(os.getenv("ARIADNE_TASK_TIMEOUT_SECONDS", "300"))
+        self._timeout = task_timeout_seconds
         self._workers: dict[str, asyncio.Task] = {}
 
     async def run(self):
@@ -68,7 +68,7 @@ class RepoAgentOrchestrator:
         if worker:
             worker.cancel()
 
-    async def _run_worker(self, record: TaskRecord):
+    async def _run_worker(self, record: AriadneTask):
         task_id = record.task_id
         self._session.logger.log(
             "runtime",
@@ -82,10 +82,13 @@ class RepoAgentOrchestrator:
         )
 
         try:
-            result = await asyncio.wait_for(self._execute(record), timeout=self._timeout)
+            result: TaskResult = await asyncio.wait_for(
+                self._task_executor.execute(record),
+                timeout=self._timeout,
+            )
         except asyncio.TimeoutError:
-            if self._queue.get(task_id).status == "failed":
-                return  # Already cancelled by user — don't overwrite.
+            if (r := self._queue.get(task_id)) is not None and r.status == "failed":
+                return
             self._queue.mark_failed(task_id, "timeout")
             self._session.logger.log(
                 "runtime",
@@ -103,7 +106,7 @@ class RepoAgentOrchestrator:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            if self._queue.get(task_id).status == "failed":
+            if (r := self._queue.get(task_id)) is not None and r.status == "failed":
                 return
             self._queue.mark_failed(task_id, "worker_error")
             self._session.logger.log(
@@ -119,28 +122,13 @@ class RepoAgentOrchestrator:
             })
             return
 
-        # Check if the task was cancelled while the worker ran — discard results.
-        if self._queue.get(task_id).status == "failed":
+        # Discard results if the task was cancelled while the worker ran.
+        if (r := self._queue.get(task_id)) is not None and r.status == "failed":
             self._session.logger.log(
                 "runtime",
                 "runtime.task_cancelled_result_discarded",
                 {"task_id": task_id},
             )
-            return
-
-        if result is None:
-            self._queue.mark_failed(task_id, "worker_error")
-            self._session.logger.log(
-                "runtime",
-                "runtime.task_failed",
-                {"task_id": task_id, "failure_reason": "worker_error"},
-            )
-            await self._on_task_event({
-                "task_id": task_id,
-                "status": "failed",
-                "failure_reason": "worker_error",
-                "message": "The task didn't return any results.",
-            })
             return
 
         self._queue.mark_done(task_id, result)
@@ -154,17 +142,3 @@ class RepoAgentOrchestrator:
             "status": "done",
             "result_available": True,
         })
-
-    async def _execute(self, record: TaskRecord) -> dict | None:
-        if record.kind == "investigation":
-            return await self._repo_investigator.investigate(
-                record.problem_context,
-                turn_id=self._session.current_turn_id,
-                investigation_id=self._session.next_investigation_id(),
-            )
-        elif record.kind == "write-doc":
-            writer = ImplementationDocWriter()
-            return await writer.write_doc(record.problem_context, self._session)
-        else:
-            logger.error(f"Unknown task kind: {record.kind}")
-            return None

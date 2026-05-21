@@ -1,58 +1,66 @@
 import asyncio
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 
-VALID_KINDS = {"investigation", "write-doc"}
+from ariadne.task_result import TaskResult
+
+
+class TaskKind(StrEnum):
+    INVESTIGATION = "investigation"
+    WRITE_DOC = "write-doc"
+
+
+class TaskStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
-class TaskRecord:
+class AriadneTask:
     task_id: str
-    kind: str
-    status: str  # "queued" | "running" | "done" | "failed"
+    kind: TaskKind
+    status: TaskStatus
     description: str
     problem_context: str
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
-    result: dict | None = None  # {"summary_for_voice": str, "full_result": str}
+    result: TaskResult | None = None
     failure_reason: str | None = None
 
 
-class TaskQueue:
+class AriadneTaskQueue:
     """
-    In-process task store and queue for Ariadne background tasks.
+    In-process task store for Ariadne background tasks.
 
-    Tracks all task records. Exposes synchronous read/write operations for
-    LLM tool handlers and orchestrator. Signals waiters via asyncio.Event
-    when new work becomes eligible.
+    Enforces one running task per kind and a configurable active-task cap.
+    Signals waiters via asyncio.Event when new work becomes eligible.
     """
 
-    def __init__(self):
-        self._max_active = int(os.getenv("ARIADNE_TASK_QUEUE_MAX", "5"))
-        self._tasks: dict[str, TaskRecord] = {}
+    def __init__(self, max_active: int = 5):
+        self._max_active = max_active
+        self._tasks: dict[str, AriadneTask] = {}
         self._counter = 0
         self._work_available: asyncio.Event = asyncio.Event()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _active_count(self) -> int:
-        return sum(1 for t in self._tasks.values() if t.status in ("queued", "running"))
+        return sum(1 for t in self._tasks.values() if t.status in (TaskStatus.QUEUED, TaskStatus.RUNNING))
 
-    def _has_running(self, kind: str) -> bool:
-        return any(t.kind == kind and t.status == "running" for t in self._tasks.values())
+    def _has_running(self, kind: TaskKind) -> bool:
+        return any(t.kind == kind and t.status == TaskStatus.RUNNING for t in self._tasks.values())
 
-    def get(self, task_id: str) -> TaskRecord | None:
+    def get(self, task_id: str) -> AriadneTask | None:
         return self._tasks.get(task_id)
 
-    def next_eligible(self) -> TaskRecord | None:
+    def next_eligible(self) -> AriadneTask | None:
         """Return the oldest queued task that has no same-kind task running."""
         for record in sorted(self._tasks.values(), key=lambda t: t.created_at):
-            if record.status != "queued":
+            if record.status != TaskStatus.QUEUED:
                 continue
             if self._has_running(record.kind):
                 continue
@@ -60,11 +68,13 @@ class TaskQueue:
         return None
 
     # ------------------------------------------------------------------
-    # Tool-facing operations (called by LLM tool handlers)
+    # Tool-facing operations
     # ------------------------------------------------------------------
 
     def enqueue(self, kind: str, description: str, problem_context: str) -> dict:
-        if kind not in VALID_KINDS:
+        try:
+            task_kind = TaskKind(kind)
+        except ValueError:
             return {"status": "rejected", "reason": f"unknown kind '{kind}'"}
         if not description.strip():
             return {"status": "rejected", "reason": "description must be non-empty"}
@@ -80,10 +90,10 @@ class TaskQueue:
         self._counter += 1
         task_id = f"task-{self._counter:03d}"
         now = datetime.now(timezone.utc)
-        record = TaskRecord(
+        record = AriadneTask(
             task_id=task_id,
-            kind=kind,
-            status="queued",
+            kind=task_kind,
+            status=TaskStatus.QUEUED,
             description=description,
             problem_context=problem_context,
             created_at=now,
@@ -93,7 +103,7 @@ class TaskQueue:
         self._work_available.set()
 
         response: dict = {"status": "queued", "task_id": task_id}
-        if self._has_running(kind):
+        if self._has_running(task_kind):
             response["note"] = "waiting for running same-kind task"
         return response
 
@@ -102,16 +112,16 @@ class TaskQueue:
         if record is None:
             return {"dequeued": False, "previous_status": "not_found", "status": "not_found"}
         prev = record.status
-        if prev != "queued":
+        if prev != TaskStatus.QUEUED:
             return {"dequeued": False, "previous_status": prev, "status": prev}
         now = datetime.now(timezone.utc)
-        record.status = "failed"
+        record.status = TaskStatus.FAILED
         record.failure_reason = "dequeued"
         record.updated_at = now
         return {
             "dequeued": True,
             "previous_status": prev,
-            "status": "failed",
+            "status": TaskStatus.FAILED,
             "failure_reason": "dequeued",
         }
 
@@ -130,11 +140,17 @@ class TaskQueue:
         }
 
     def get_active_tasks(self, kind: str | None = None) -> dict:
+        kind_filter: TaskKind | None = None
+        if kind is not None:
+            try:
+                kind_filter = TaskKind(kind)
+            except ValueError:
+                return {"tasks": [], "active_count": 0, "active_capacity": self._max_active}
         tasks = []
         for record in sorted(self._tasks.values(), key=lambda t: t.created_at):
-            if record.status not in ("queued", "running"):
+            if record.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
                 continue
-            if kind is not None and record.kind != kind:
+            if kind_filter is not None and record.kind != kind_filter:
                 continue
             elapsed = None
             if record.started_at:
@@ -159,8 +175,13 @@ class TaskQueue:
         elapsed = None
         if record.started_at:
             elapsed = int((datetime.now(timezone.utc) - record.started_at).total_seconds())
-        if record.status == "done":
-            return {"status": "done", "result": record.result, "elapsed_seconds": elapsed}
+        if record.status == TaskStatus.DONE and record.result is not None:
+            return {
+                "status": "done",
+                "voice_summary": record.result.voice_summary,
+                "context": record.result.context,
+                "elapsed_seconds": elapsed,
+            }
         return {
             "status": record.status,
             "failure_reason": record.failure_reason,
@@ -171,12 +192,12 @@ class TaskQueue:
         record = self._tasks.get(task_id)
         if record is None:
             return {"status": "not_found"}
-        if record.status not in ("queued", "running"):
+        if record.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
             return {"status": record.status}
-        record.status = "failed"
+        record.status = TaskStatus.FAILED
         record.failure_reason = "cancelled"
         record.updated_at = datetime.now(timezone.utc)
-        return {"status": "failed", "failure_reason": "cancelled"}
+        return {"status": TaskStatus.FAILED, "failure_reason": "cancelled"}
 
     # ------------------------------------------------------------------
     # Orchestrator-facing operations
@@ -185,23 +206,23 @@ class TaskQueue:
     def mark_running(self, task_id: str):
         r = self._tasks[task_id]
         now = datetime.now(timezone.utc)
-        r.status = "running"
+        r.status = TaskStatus.RUNNING
         r.started_at = now
         r.updated_at = now
 
-    def mark_done(self, task_id: str, result: dict):
+    def mark_done(self, task_id: str, result: TaskResult):
         r = self._tasks[task_id]
         now = datetime.now(timezone.utc)
-        r.status = "done"
+        r.status = TaskStatus.DONE
         r.result = result
         r.completed_at = now
         r.updated_at = now
-        self._work_available.set()  # A slot freed up; same-kind queued tasks may now be eligible.
+        self._work_available.set()
 
     def mark_failed(self, task_id: str, failure_reason: str):
         r = self._tasks[task_id]
         now = datetime.now(timezone.utc)
-        r.status = "failed"
+        r.status = TaskStatus.FAILED
         r.failure_reason = failure_reason
         r.completed_at = now
         r.updated_at = now

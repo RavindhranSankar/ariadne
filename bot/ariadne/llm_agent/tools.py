@@ -2,9 +2,9 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 
-from ariadne.orchestrator import RepoAgentOrchestrator
-from ariadne.session import AriadneSession
-from ariadne.task_queue import TaskQueue
+from ariadne.ariadne_session import AriadneSession
+from ariadne.ariadne_task_queue import AriadneTaskQueue
+from ariadne.orchestrator import Orchestrator
 
 
 def build_tools_schema() -> ToolsSchema:
@@ -75,7 +75,7 @@ def build_tools_schema() -> ToolsSchema:
             description=(
                 "Retrieve results for a completed task. "
                 "Call this after receiving a task completion notice. "
-                "Returns summary_for_voice (speak this first) and full_result "
+                "Returns voice_summary (speak this first) and context "
                 "(use for deeper follow-up or as input to a write-doc task)."
             ),
             properties={
@@ -99,8 +99,8 @@ def build_tools_schema() -> ToolsSchema:
 
 def register_tools(
     llm,
-    task_queue: TaskQueue,
-    orchestrator: RepoAgentOrchestrator,
+    task_queue: AriadneTaskQueue,
+    orchestrator: Orchestrator,
     session: AriadneSession,
 ):
     def _log(event: str, data: dict):
@@ -149,7 +149,7 @@ def register_tools(
         _log("conversation-agent.tool_call", {
             "tool": "get_task_results",
             "args": {"task_id": task_id},
-            "result": {k: v for k, v in result.items() if k != "result"},  # skip large payload
+            "result": {k: v for k, v in result.items() if k != "context"},  # skip large payload
         })
         await params.result_callback(result)
 

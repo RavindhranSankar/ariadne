@@ -6,9 +6,11 @@ from pathlib import Path
 
 from loguru import logger
 
-from ariadne.session import AriadneSession
+from ariadne.ariadne_session import AriadneSession
+from ariadne.task_result import TaskResult
 
 _RULES_PATH = Path(__file__).parent / "ARIADNE-AGENT-RULES.md"
+_PROMPT_TEMPLATE = (Path(__file__).parent / "INVESTIGATION_PROMPT.md").read_text(encoding="utf-8")
 
 _SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9]{20,}"),
@@ -21,10 +23,10 @@ _SECRET_PATTERNS = [
 ]
 
 
-def _parse_investigation_result(raw: str) -> dict:
+def _parse_investigation_result(raw: str) -> TaskResult:
     """
-    Parse the 2-part Codex response into summary_for_voice and full_result.
-    Falls back gracefully if the format wasn't followed.
+    Parse the 2-part Codex response into voice_summary and context.
+    Falls back gracefully if the expected format wasn't followed.
     """
     summary = ""
     full = raw
@@ -42,11 +44,10 @@ def _parse_investigation_result(raw: str) -> dict:
         summary = raw[voice_idx + len(voice_marker):].strip()
         full = raw
     else:
-        # No sections found — use first paragraph as summary.
         paragraphs = [p.strip() for p in raw.split("\n\n") if p.strip()]
         summary = paragraphs[0] if paragraphs else raw
 
-    return {"summary_for_voice": summary, "full_result": full}
+    return TaskResult(voice_summary=summary, context=full)
 
 
 def _redact(text: str) -> str:
@@ -55,10 +56,11 @@ def _redact(text: str) -> str:
     return text
 
 
-class RepoInvestigator:
-    def __init__(self, *, repo_path: str, session: AriadneSession):
+class Investigator:
+    def __init__(self, *, repo_path: str, session: AriadneSession, codex_timeout_seconds: float = 300.0):
         self._repo_path = repo_path
         self._session = session
+        self._codex_timeout = codex_timeout_seconds
         self._rules = self._load_rules()
         self._safe = self._validate_paths()
 
@@ -71,7 +73,7 @@ class RepoInvestigator:
 
     def _validate_paths(self) -> bool:
         if not self._repo_path:
-            logger.error("ARIADNE_REPO_PATH is not set — Repo Investigator will not run")
+            logger.error("ARIADNE_REPO_PATH is not set — Investigator will not run")
             return False
 
         repo = Path(self._repo_path).resolve()
@@ -91,13 +93,13 @@ class RepoInvestigator:
                 logs.relative_to(repo)
                 logger.error(
                     f"LOGS_DIR ({logs}) is inside ARIADNE_REPO_PATH ({repo}) — "
-                    "Repo Investigator will not run."
+                    "Investigator will not run."
                 )
                 return False
             except ValueError:
                 pass
 
-        logger.info(f"Repo Investigator path validation passed: repo={repo}")
+        logger.info(f"Investigator path validation passed: repo={repo}")
         return True
 
     async def investigate(
@@ -105,34 +107,22 @@ class RepoInvestigator:
         task: str,
         turn_id: str | None,
         investigation_id: str,
-    ) -> dict | None:
+    ) -> TaskResult | None:
         """
         Run a read-only Codex investigation for `task`.
-        Returns redacted stdout on success, None on failure/timeout.
+        Returns TaskResult on success, None on failure.
         """
         if not self._safe:
             self._session.logger.log(
                 "repo-investigator",
                 "repo-investigator.error",
-                {"error": "Repo Investigator not launched: path validation failed at startup"},
+                {"error": "Investigator not launched: path validation failed at startup"},
                 turn_id=turn_id,
                 investigation_id=investigation_id,
             )
             return None
 
-        prompt = f"""{self._rules}
-
-Task:
-{task}
-
-Inspect read-only under ARIADNE_REPO_PATH. Return your response in exactly this format:
-
-## Summary For Voice
-<2-3 plain-English sentences summarizing the answer, suitable for speaking aloud on a phone call. No markdown, no bullet points.>
-
-## Full Result
-<Detailed findings: file paths, evidence, likely next steps, risks, and uncertainty.>
-""".strip()
+        prompt = _PROMPT_TEMPLATE.format(rules=self._rules, task=task).strip()
 
         self._session.logger.log(
             "repo-investigator",
@@ -169,7 +159,7 @@ Inspect read-only under ARIADNE_REPO_PATH. Return your response in exactly this 
 
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(prompt.encode("utf-8")),
-                timeout=120,
+                timeout=self._codex_timeout,
             )
 
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -183,8 +173,8 @@ Inspect read-only under ARIADNE_REPO_PATH. Return your response in exactly this 
                     turn_id=turn_id,
                     investigation_id=investigation_id,
                 )
-                self._session.logger.append_transcript_codex(turn_id, investigation_id, raw)
-                logger.info(f"Repo Investigator response:\n{raw}")
+                self._session.logger.append_transcript_codex(turn_id or "", investigation_id, raw)
+                logger.info(f"Investigator response:\n{raw}")
 
             if stderr:
                 stderr_text = _redact(stderr.decode("utf-8", errors="replace"))
@@ -195,7 +185,7 @@ Inspect read-only under ARIADNE_REPO_PATH. Return your response in exactly this 
                     turn_id=turn_id,
                     investigation_id=investigation_id,
                 )
-                logger.warning(f"Repo Investigator stderr:\n{stderr_text}")
+                logger.warning(f"Investigator stderr:\n{stderr_text}")
 
             if not raw:
                 return None
@@ -212,7 +202,7 @@ Inspect read-only under ARIADNE_REPO_PATH. Return your response in exactly this 
                 turn_id=turn_id,
                 investigation_id=investigation_id,
             )
-            logger.warning("Repo Investigator request timed out")
+            logger.warning("Investigator request timed out")
             return None
 
         except Exception as exc:
@@ -223,12 +213,5 @@ Inspect read-only under ARIADNE_REPO_PATH. Return your response in exactly this 
                 turn_id=turn_id,
                 investigation_id=investigation_id,
             )
-            logger.exception(f"Repo Investigator request failed: {exc}")
+            logger.exception(f"Investigator request failed: {exc}")
             return None
-
-
-def create_repo_investigator(session: AriadneSession) -> RepoInvestigator:
-    return RepoInvestigator(
-        repo_path=os.getenv("ARIADNE_REPO_PATH", ""),
-        session=session,
-    )
