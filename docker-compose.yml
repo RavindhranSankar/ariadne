@@ -1,6 +1,7 @@
 services:
   ariadne:
     image: ravisankarmbp/ariadne:latest
+    restart: unless-stopped
     build:
       context: ./bot
     env_file:
