@@ -137,7 +137,7 @@ _check() {
   fi
 }
 
-_check "python3"  required  "https://python.org (3.10+)"
+_check "python3"  required  "https://python.org (3.11+)"
 _check "uv"       required  "https://docs.astral.sh/uv/"
 _check "git"      required  "https://git-scm.com"
 _check "curl"     required  ""

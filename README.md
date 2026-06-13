@@ -51,7 +51,7 @@ That's what you'd set up on your own repo.
 ## Requirements
 
 - macOS or Linux
-- Python 3.10+
+- Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
 - [OpenAI Codex CLI](https://github.com/openai/codex) authenticated locally
 - [ngrok](https://ngrok.com/download) authenticated locally
